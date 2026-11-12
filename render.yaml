@@ -3,7 +3,8 @@ services:
     name: aandopharmacy
     runtime: node
     plan: starter
-    buildCommand: npm install && npm run build
+    rootDir: .
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:

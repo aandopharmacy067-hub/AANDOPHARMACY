@@ -29,6 +29,12 @@ const allowedOrigin = new URL(publicOrigin).origin
 const mnotifyApiKey = process.env.MNOTIFY_API_KEY
 const mnotifySenderId = process.env.MNOTIFY_SENDER_ID?.trim() ?? ''
 const currency = 'GHS'
+const frontendBuildPath = path.resolve(__dirname, '../dist')
+
+if (!existsSync(path.join(frontendBuildPath, 'index.html'))) {
+  console.error('Frontend build is missing. Run `npm run build` before starting the production server.')
+  process.exit(1)
+}
 
 app.disable('x-powered-by')
 app.set('trust proxy', 1)
@@ -396,10 +402,10 @@ if (firebaseAdminCredentialsConfigured && projectId) {
   reservationCleanup.unref()
 }
 
-app.use(express.static(path.resolve(__dirname, '../dist'), { index: false, maxAge: '1h' }))
+app.use(express.static(frontendBuildPath, { index: false, maxAge: '1h' }))
 app.get('*path', (request, response, next) => {
   if (request.path.startsWith('/api/')) return response.status(404).json({ error: 'API route not found.' })
-  response.sendFile(path.resolve(__dirname, '../dist/index.html'), (error) => error && next(error))
+  response.sendFile(path.join(frontendBuildPath, 'index.html'), (error) => error && next(error))
 })
 
 app.listen(port, '0.0.0.0', () => console.log(`A & O Pharmacy server listening on port ${port}`))
