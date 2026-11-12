@@ -16,6 +16,14 @@ services:
         value: https://aandopharmacy.onrender.com
       - key: FIREBASE_PROJECT_ID
         value: a-o-pharmacy
+      - key: VITE_FIREBASE_PROJECT_ID
+        value: a-o-pharmacy
+      - key: VITE_FIREBASE_API_KEY
+        sync: false
+      - key: VITE_FIREBASE_AUTH_DOMAIN
+        sync: false
+      - key: VITE_FIREBASE_APP_ID
+        sync: false
       - key: PAYSTACK_SECRET_KEY
         sync: false
       - key: FIREBASE_SERVICE_ACCOUNT_JSON
