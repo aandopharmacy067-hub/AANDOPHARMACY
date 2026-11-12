@@ -76,7 +76,12 @@ function authenticateUser(request, response, next) {
   auth.verifyIdToken(match[1], true).then((decoded) => {
     request.user = decoded
     next()
-  }).catch(() => response.status(401).json({ error: 'Your session expired. Sign in again.' }))
+  }).catch((error) => {
+    const code = error && typeof error.code === 'string' ? error.code : 'unknown'
+    console.error(`Firebase ID token verification failed: ${code}`)
+    if (code === 'auth/insufficient-permission') return response.status(503).json({ error: 'Firebase Admin is missing permission to verify accounts.' })
+    return response.status(401).json({ error: 'Your session expired. Sign in again.' })
+  })
 }
 
 function requireVerifiedEmail(request, response, next) {

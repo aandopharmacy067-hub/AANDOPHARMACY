@@ -28,7 +28,7 @@ const isDesignatedAdmin = (user: User | null) => user?.email?.trim().toLowerCase
 
 async function requestAuthSms(user: User, event: 'signup' | 'login') {
   try {
-    const token = await user.getIdToken()
+    const token = await user.getIdToken(true)
     await fetch('/api/notifications/auth-sms', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -175,7 +175,7 @@ function App() {
     const reference = new URLSearchParams(window.location.search).get('reference')
     if (!reference || !currentUser?.emailVerified) return
     let active = true
-    currentUser.getIdToken().then((token) => fetch('/api/payments/verify', {
+    currentUser.getIdToken(true).then((token) => fetch('/api/payments/verify', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ reference }),
@@ -337,7 +337,7 @@ function App() {
     if (!currentUser || !emailVerified) { setNotice('Sign in with a verified email before checkout.'); return }
     setCheckoutBusy(true)
     try {
-      const token = await currentUser.getIdToken()
+      const token = await currentUser.getIdToken(true)
       const response = await fetch('/api/payments/checkout', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
