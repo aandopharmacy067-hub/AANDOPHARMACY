@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: aandopharmacy
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: PUBLIC_APP_URL
+        value: https://aandopharmacy.onrender.com
+      - key: FIREBASE_PROJECT_ID
+        value: a-o-pharmacy
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: MNOTIFY_API_KEY
+        sync: false
+      - key: MNOTIFY_SENDER_ID
+        value: AO PHARMACY

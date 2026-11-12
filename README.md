@@ -36,16 +36,17 @@ Without Firebase values the app uses a clearly marked sample catalogue. Authenti
 ## Firebase Setup
 
 1. Create a Firebase project and register a Web App. Enable Email/Password sign-in.
-2. In Firebase Authentication settings, add the local development host and your deployed site domain to Authorized domains so verification links can return to the app.
+2. In Firebase Authentication settings, add the local development host and `aandopharmacy.onrender.com` to Authorized domains so verification links can return to the app.
 3. Create Firestore in production mode.
 4. Copy `.env.example` to `.env.local`; set `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, and `VITE_FIREBASE_APP_ID`. Product images are embedded in Firestore, so no Storage bucket is required for catalogue image uploads.
 5. Set the Firebase project with `firebase use --add`.
 6. Deploy rules and indexes before using the app: `firebase deploy --only firestore:rules,firestore:indexes`.
-7. Copy `.env.server.example` to `.env.server` for local work. For a hosted service, set the same values through the host's private environment settings: Paystack secret, Firebase Admin service-account JSON (or `GOOGLE_APPLICATION_CREDENTIALS` file), `FIREBASE_PROJECT_ID`, `PUBLIC_APP_URL`, and optionally mNotify API key/sender ID. Create a Firebase service account with only the Auth verification and Firestore access this server needs; never commit its key file.
-8. Configure the Paystack webhook URL as `https://YOUR_DOMAIN/api/payments/webhook` in the Paystack dashboard. Use test-mode keys and test events first.
-9. Build with `npm run build`; configure the host start command as `npm start`. The same Express process serves the built website and `/api` endpoints.
+7. Deploy this repository to Render using the included `render.yaml` Blueprint. It creates a single Node web service named `aandopharmacy`, building with `npm install && npm run build` and starting with `npm start`.
+8. In Render's private Environment settings, enter `PAYSTACK_SECRET_KEY`, `FIREBASE_SERVICE_ACCOUNT_JSON`, and `MNOTIFY_API_KEY`. Use a newly rotated Paystack key, a newly generated Firebase service-account JSON, and a rotated mNotify API key. Never commit these values or put them in `.env.local`/`VITE_*` variables.
+9. In Paystack, configure the webhook URL as `https://aandopharmacy.onrender.com/api/payments/webhook`. Use test-mode keys and test events first, and confirm the Render health check `/api/health` is healthy.
+10. The Render service uses its single origin for storefront, checkout, return verification, webhooks and SMS APIs. `PUBLIC_APP_URL` is set in `render.yaml` to `https://aandopharmacy.onrender.com`.
 
-Never put the Paystack secret, mNotify key or Firebase service-account credentials in source control, `.env.local`, or any `VITE_*` setting. The browser cannot supply the Paystack callback URL, price, amount or payment status; the Express server owns those decisions.
+Never put the Paystack secret, mNotify key or Firebase service-account credentials in source control, `.env.local`, or any `VITE_*` setting. The browser cannot supply the Paystack callback URL, price, amount or payment status; the Express server owns those decisions. Credentials previously pasted into chat should be revoked and replaced before production deployment.
 
 ## Firestore Data Shape
 
