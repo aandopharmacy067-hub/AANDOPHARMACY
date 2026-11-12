@@ -289,9 +289,21 @@ app.post('/api/payments/checkout', express.json({ limit: '100kb' }), (request, r
     order = await db.runTransaction(async (transaction) => {
       const snapshots = await transaction.getAll(userRef, commerceRef, counterRef, ...productRefs, ...pricingRefs)
       const [userSnapshot, commerceSnapshot, counterSnapshot] = snapshots
-      if (!userSnapshot.exists || userSnapshot.get('accountStatus') === 'suspended') throw new Error('Customer account is unavailable.')
+      if (userSnapshot.exists && userSnapshot.get('accountStatus') === 'suspended') throw new Error('Customer account is unavailable.')
+      if (!userSnapshot.exists) {
+        transaction.create(userRef, {
+          fullName: normalizedAddress.fullName,
+          email: String(request.user.email ?? '').trim().toLowerCase(),
+          phone: normalizedAddress.phone,
+          smsConsent: false,
+          accountStatus: 'active',
+          wholesaleStatus: 'none',
+          createdAt: FieldValue.serverTimestamp(),
+        })
+      }
       const commerce = commerceSnapshot.data() ?? {}
-      const wholesaleAllowed = userSnapshot.get('wholesaleStatus') === 'approved' || commerce.wholesaleAccess === 'open'
+      const wholesaleStatus = userSnapshot.exists ? userSnapshot.get('wholesaleStatus') : 'none'
+      const wholesaleAllowed = wholesaleStatus === 'approved' || commerce.wholesaleAccess === 'open'
       if (mode === 'wholesale' && !wholesaleAllowed) throw new Error('Wholesale account approval is required.')
       const counter = counterSnapshot.data() ?? { sequence: 0 }
       const sequence = Number(counter.sequence ?? 0) + 1
