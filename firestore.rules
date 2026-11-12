@@ -1,0 +1,118 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isOwner(uid) { return signedIn() && request.auth.uid == uid; }
+    function isAdmin() {
+      return signedIn()
+        && request.auth.token.email == 'aandopharmacy067@gmail.com'
+        && request.auth.token.email_verified == true;
+    }
+
+    match /users/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasOnly(['fullName', 'email', 'phone', 'smsConsent', 'smsConsentAt', 'createdAt', 'accountStatus', 'wholesaleStatus'])
+        && request.resource.data.accountStatus == 'active'
+        && request.resource.data.wholesaleStatus == 'none'
+        && request.resource.data.smsConsent is bool;
+      allow update: if isAdmin() || (isOwner(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'phone', 'defaultAddress', 'smsConsent', 'smsConsentAt', 'updatedAt']));
+      allow delete: if isAdmin();
+    }
+
+    match /products/{productId} {
+      allow read: if (resource.data.publicationStatus == 'published' && resource.data.onlineSaleApproved == true)
+        || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /wholesalePricing/{productId} {
+      function wholesaleEligible() {
+        return signedIn() && (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.wholesaleStatus == 'approved'
+          || get(/databases/$(database)/documents/settings/commerce).data.wholesaleAccess == 'open'
+        );
+      }
+      allow read: if isAdmin() || wholesaleEligible();
+      allow write: if isAdmin();
+    }
+
+    match /categories/{categoryId} {
+      allow read: if resource.data.status == 'published' || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow read: if signedIn() && resource.data.customerId == request.auth.uid || isAdmin();
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['orderStatus', 'internalNotes', 'deliveryNotes', 'updatedAt']);
+      allow create, delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow read: if signedIn() && resource.data.customerId == request.auth.uid || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /wholesaleApplications/{applicationId} {
+      allow create: if signedIn()
+        && request.resource.data.customerId == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.keys().hasOnly(['customerId', 'businessName', 'businessType', 'phone', 'status', 'createdAt']);
+      allow read: if signedIn() && resource.data.customerId == request.auth.uid || isAdmin();
+      allow update, delete: if isAdmin();
+    }
+
+    match /reviews/{reviewId} {
+      allow read: if resource.data.status == 'approved' || isAdmin();
+      allow create: if signedIn()
+        && request.resource.data.customerId == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.keys().hasOnly(['customerId', 'productId', 'rating', 'text', 'status', 'createdAt'])
+        && request.resource.data.rating is int
+        && request.resource.data.rating >= 1
+        && request.resource.data.rating <= 5
+        && request.resource.data.text is string
+        && request.resource.data.text.size() <= 2000;
+      allow update, delete: if isAdmin();
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if signedIn() && resource.data.recipientId == request.auth.uid || isAdmin();
+      allow update: if signedIn()
+        && resource.data.recipientId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow create, delete: if isAdmin();
+    }
+
+    match /activityLogs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /smsEvents/{eventId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /inventoryMovements/{movementId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /coupons/{couponId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read: if isAdmin() || settingId == 'commerce';
+      allow write: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
