@@ -24,8 +24,9 @@ const db = getFirestore(firebaseApp)
 const app = express()
 const port = Number(process.env.PORT || 3001)
 const paystackSecret = process.env.PAYSTACK_SECRET_KEY
-const publicOrigin = process.env.PUBLIC_APP_URL || 'http://localhost:5173'
+const publicOrigin = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || 'http://localhost:5173'
 const allowedOrigin = new URL(publicOrigin).origin
+const configuredOrigins = new Set([allowedOrigin, process.env.PUBLIC_APP_URL, process.env.RENDER_EXTERNAL_URL].filter(Boolean).map((origin) => new URL(origin).origin))
 const mnotifyApiKey = process.env.MNOTIFY_API_KEY
 const mnotifySenderId = process.env.MNOTIFY_SENDER_ID?.trim() ?? ''
 const currency = 'GHS'
@@ -40,8 +41,9 @@ app.disable('x-powered-by')
 app.set('trust proxy', 1)
 app.use('/api', (request, response, next) => {
   const origin = request.headers.origin
+  const requestOrigin = `${request.protocol}://${request.get('host')}`
   const localDevOrigins = new Set(['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175'])
-  if (origin && origin !== allowedOrigin && !(process.env.NODE_ENV !== 'production' && localDevOrigins.has(origin))) {
+  if (origin && origin !== requestOrigin && !configuredOrigins.has(origin) && !(process.env.NODE_ENV !== 'production' && localDevOrigins.has(origin))) {
     return response.status(403).json({ error: 'Origin not allowed.' })
   }
   if (origin) response.setHeader('Access-Control-Allow-Origin', origin)
