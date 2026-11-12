@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { collection, doc, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore'
-import { ArrowRight, BadgeCheck, Box, ClipboardList, ImagePlus, LogOut, MessageSquareText, PackagePlus, RefreshCw, ShieldCheck, Users } from 'lucide-react'
+import { collection, doc, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore'
+import { ArrowRight, BadgeCheck, Box, CalendarDays, ClipboardList, CreditCard, ImagePlus, LogOut, MessageSquareText, PackagePlus, RefreshCw, ShieldCheck, ShoppingCart, Users } from 'lucide-react'
 import { signOut } from 'firebase/auth'
 import { auth, db } from './lib/firebase'
 import './admin-live.css'
@@ -31,6 +31,7 @@ type AdminOrder = {
   paymentStatus: string
   orderStatus: string
   createdAt?: { toDate?: () => Date }
+  paidAt?: { toDate?: () => Date }
   deliveryInstructions?: string
   address?: { fullName?: string; phone?: string; street?: string; city?: string; region?: string }
   items?: Array<{ name: string; quantity: number; lineTotalPesewas?: number }>
@@ -60,6 +61,11 @@ const categories = ['Prescription Medicines', 'Over-the-Counter Medicines', 'Vit
 const orderStatuses = ['payment_confirmed', 'processing', 'ready_for_dispatch', 'out_for_delivery', 'completed', 'cancelled', 'refund_pending', 'refunded']
 const currency = (pesewas: number) => `GH₵ ${(pesewas / 100).toFixed(2)}`
 const dateLabel = (timestamp?: { toDate?: () => Date }) => timestamp?.toDate ? timestamp.toDate().toLocaleString() : 'Just now'
+const localDayStart = (date: Date) => {
+  const start = new Date(date)
+  start.setHours(0, 0, 0, 0)
+  return start
+}
 const isValidGhanaPhone = (value: string) => {
   const digits = value.trim().replace(/[^\d+]/g, '')
   const local = digits.startsWith('+233') ? `0${digits.slice(4)}` : digits.startsWith('233') ? `0${digits.slice(3)}` : digits
@@ -105,6 +111,9 @@ export default function AdminPortal({ adminEmail, onExit }: { adminEmail: string
   const [section, setSection] = useState<'Overview' | 'Products' | 'Orders' | 'Reviews' | 'Users'>('Overview')
   const [products, setProducts] = useState<AdminProduct[]>([])
   const [orders, setOrders] = useState<AdminOrder[]>([])
+  const [todayOrders, setTodayOrders] = useState<AdminOrder[]>([])
+  const [paymentsToday, setPaymentsToday] = useState<AdminOrder[]>([])
+  const [todayStart, setTodayStart] = useState(() => localDayStart(new Date()))
   const [reviews, setReviews] = useState<AdminReview[]>([])
   const [users, setUsers] = useState<AdminUser[]>([])
   const [usersLoading, setUsersLoading] = useState(false)
@@ -125,6 +134,21 @@ export default function AdminPortal({ adminEmail, onExit }: { adminEmail: string
   const [uploadStage, setUploadStage] = useState<'idle' | 'optimizing' | 'saving'>('idle')
 
   useEffect(() => {
+    let timer = 0
+    const scheduleNextDay = () => {
+      const now = new Date()
+      const nextDay = localDayStart(now)
+      nextDay.setDate(nextDay.getDate() + 1)
+      timer = window.setTimeout(() => {
+        setTodayStart(localDayStart(new Date()))
+        scheduleNextDay()
+      }, nextDay.getTime() - now.getTime())
+    }
+    scheduleNextDay()
+    return () => window.clearTimeout(timer)
+  }, [])
+
+  useEffect(() => {
     if (!db) return
     const unsubscribers = [
       onSnapshot(query(collection(db, 'products'), orderBy('name'), limit(200)), (snapshot) => {
@@ -140,6 +164,20 @@ export default function AdminPortal({ adminEmail, onExit }: { adminEmail: string
     ]
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
   }, [])
+
+  useEffect(() => {
+    if (!db) return
+    const start = Timestamp.fromDate(todayStart)
+    const unsubscribers = [
+      onSnapshot(query(collection(db, 'orders'), where('createdAt', '>=', start), orderBy('createdAt', 'desc')), (snapshot) => {
+        setTodayOrders(snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as AdminOrder))
+      }, (error) => setFeedError(`Today's orders: ${error.message}`)),
+      onSnapshot(query(collection(db, 'orders'), where('paidAt', '>=', start), orderBy('paidAt', 'desc')), (snapshot) => {
+        setPaymentsToday(snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as AdminOrder))
+      }, (error) => setFeedError(`Today's sales: ${error.message}`)),
+    ]
+    return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
+  }, [todayStart])
 
   useEffect(() => {
     if (!db || section !== 'Users') return
@@ -249,9 +287,19 @@ export default function AdminPortal({ adminEmail, onExit }: { adminEmail: string
   ]
   const pendingOrders = orders.filter((order) => ['pending_payment', 'payment_confirmed', 'processing'].includes(order.orderStatus)).length
   const paidTotal = orders.filter((order) => order.paymentStatus === 'success').reduce((sum, order) => sum + Number(order.totalPesewas ?? 0), 0)
+  const paymentIdsToday = new Set(paymentsToday.map((order) => order.id))
+  const salesToday = paymentsToday.filter((order) => order.paymentStatus === 'success').reduce((sum, order) => sum + Number(order.totalPesewas ?? 0), 0)
+    + todayOrders.filter((order) => order.paymentStatus === 'success' && !order.paidAt && !paymentIdsToday.has(order.id)).reduce((sum, order) => sum + Number(order.totalPesewas ?? 0), 0)
 
   return <main className="admin-layout"><aside className="admin-sidebar"><button className="admin-brand" onClick={onExit}><span className="brand-mark"><b>A</b><i>&</i><b>O</b></span><span><b>A & O</b><small>ADMINISTRATION</small></span></button><span className="admin-section-title">WORKSPACE</span><nav>{nav.map(({ label, icon: Icon }) => <button key={label} className={section === label ? 'admin-nav-active' : ''} onClick={() => setSection(label)}><Icon size={16}/>{label}</button>)}</nav><div className="admin-profile"><span className="admin-avatar">AO</span><div><b>Authorized admin</b><small>{adminEmail}</small></div><button title="Sign out" aria-label="Admin sign out" onClick={() => { if (!auth) { onExit(); return } void signOut(auth).then(onExit).catch(() => setFeedback('Sign out failed. Try again.')) }}><LogOut size={15}/></button></div></aside><section className="admin-main"><header className="admin-topbar"><div><span>Administration / Live workspace</span><h1>{section}</h1></div><span className="admin-live-indicator"><i/> Live Firebase data</span></header><div className="admin-content">{feedError && <div className="admin-feed-error" role="alert"><ShieldCheck size={18}/>{feedError} Check deployed Firestore rules and indexes.</div>}{feedback && <div className="admin-feedback" role="status">{feedback}<button type="button" onClick={() => setFeedback('')} aria-label="Dismiss message">×</button></div>}
-    {section === 'Overview' && <><div className="admin-stat-grid"><div className="admin-stat"><span>Paid sales</span><strong>{currency(paidTotal)}</strong><small>Loaded orders</small></div><div className="admin-stat"><span>Total orders</span><strong>{orders.length}</strong><small>Most recent 100</small></div><div className="admin-stat"><span>Pending / active</span><strong>{pendingOrders}</strong><small>Current queue</small></div><div className="admin-stat"><span>Products</span><strong>{products.length}</strong><small>Live catalogue records</small></div></div><div className="admin-panel"><div className="panel-heading"><div><h2>Recent orders</h2><span>Live Firestore updates</span></div><button onClick={() => setSection('Orders')}>All orders <ArrowRight size={14}/></button></div><OrdersList orders={orders.slice(0, 8)} onStatusChange={setOrderStatus}/></div><div className="admin-panel"><div className="panel-heading"><div><h2>Recent customer feedback</h2><span>Live Firestore reviews</span></div><button onClick={() => setSection('Reviews')}>All reviews <ArrowRight size={14}/></button></div><ReviewsList reviews={reviews.slice(0, 5)} onModerate={moderateReview}/></div></>}
+    {section === 'Overview' && <><div className="admin-stat-grid">
+      <div className="admin-stat admin-stat-premium"><div className="admin-stat-header"><span>Paid sales</span><CreditCard size={19}/></div><strong>{currency(paidTotal)}</strong><small>Latest 100 orders</small></div>
+      <div className="admin-stat"><span>Total orders</span><strong>{orders.length}</strong><small>Most recent 100</small></div>
+      <div className="admin-stat"><span>Pending / active</span><strong>{pendingOrders}</strong><small>Current queue</small></div>
+      <div className="admin-stat"><span>Products</span><strong>{products.length}</strong><small>Live catalogue records</small></div>
+      <div className="admin-stat admin-stat-daily admin-stat-daily-sales"><div className="admin-stat-header"><span>Sales Today</span><CalendarDays size={19}/></div><strong>{currency(salesToday)}</strong><small>Successful payments confirmed today</small></div>
+      <div className="admin-stat admin-stat-daily admin-stat-daily-orders"><div className="admin-stat-header"><span>Orders Today</span><ShoppingCart size={19}/></div><strong>{todayOrders.length}</strong><small>Orders placed today</small></div>
+    </div><div className="admin-panel"><div className="panel-heading"><div><h2>Recent orders</h2><span>Live Firestore updates</span></div><button onClick={() => setSection('Orders')}>All orders <ArrowRight size={14}/></button></div><OrdersList orders={orders.slice(0, 8)} onStatusChange={setOrderStatus}/></div><div className="admin-panel"><div className="panel-heading"><div><h2>Recent customer feedback</h2><span>Live Firestore reviews</span></div><button onClick={() => setSection('Reviews')}>All reviews <ArrowRight size={14}/></button></div><ReviewsList reviews={reviews.slice(0, 5)} onModerate={moderateReview}/></div></>}
     {section === 'Products' && <><div className="admin-panel"><div className="panel-heading"><div><h2>Add a product</h2><span>Uploaded images and approved listings sync to the storefront.</span></div><PackagePlus size={19}/></div><form className="admin-product-form" onSubmit={addProduct}><label>Product name<input required value={name} onChange={(event) => setName(event.target.value)} maxLength={120}/></label><label>Brand / manufacturer<input value={brand} onChange={(event) => setBrand(event.target.value)} maxLength={100}/></label><label>Category<select value={category} onChange={(event) => setCategory(event.target.value)}>{categories.map((option) => <option key={option}>{option}</option>)}</select></label><label>Retail price (GHS)<input required type="number" min="0.01" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)}/></label><label>Available stock<input required type="number" min="0" step="1" value={stock} onChange={(event) => setStock(event.target.value)}/></label><label className="admin-field-wide admin-image-field"><span>Product image (source max 10 MB)</span><input id="admin-product-image" required type="file" accept="image/*" onChange={(event) => setImage(event.target.files?.[0] ?? null)}/><small>{image ? image.name : 'The image is compressed to fit safely in Firestore.'}</small></label><div className="admin-check-options"><label><input type="checkbox" checked={saleApproved} onChange={(event) => setSaleApproved(event.target.checked)}/> Approved for online sale</label><label><input type="checkbox" checked={publish} onChange={(event) => setPublish(event.target.checked)}/> Publish to storefront</label><label><input type="checkbox" checked={prescriptionRequired} onChange={(event) => setPrescriptionRequired(event.target.checked)}/> Prescription required</label><label><input type="checkbox" checked={featured} onChange={(event) => setFeatured(event.target.checked)}/> Featured</label></div><p className="admin-form-note">A listing appears publicly only when both approval and publish are selected. Prescription-required products remain blocked from checkout.</p>{busy && <div className="admin-upload-progress" role="status"><span>{uploadStage === 'optimizing' ? 'Optimizing image for Firestore…' : 'Saving product and image to Firestore…'}</span><progress/></div>}<button className="button button-green" type="submit" disabled={busy || (publish && !saleApproved)}>{busy ? uploadStage === 'optimizing' ? 'Optimizing image…' : 'Saving product…' : <><ImagePlus size={16}/> Save product</>}</button></form></div><div className="admin-panel"><div className="panel-heading"><div><h2>Catalogue</h2><span>{products.length} live records, including drafts</span></div><RefreshCw size={17}/></div><div className="admin-product-list">{products.map((product) => <div className="admin-product-row" key={product.id}><img src={product.images?.[0]?.url ?? ''} alt=""/><div className="admin-product-description"><b>{product.name}</b><small>{product.sku} · {product.categoryName} · Stock {product.stock}</small></div><strong>{currency(product.retailPricePesewas)}</strong><span className={`admin-product-status ${product.publicationStatus === 'published' && product.onlineSaleApproved ? 'is-published' : ''}`}>{product.publicationStatus === 'published' && product.onlineSaleApproved ? 'Published' : 'Draft'}</span><button className="admin-small-action" onClick={() => void setProductPublished(product)}>{product.publicationStatus === 'published' ? 'Unpublish' : product.onlineSaleApproved ? 'Publish' : 'Approve & publish'}</button></div>)}{products.length === 0 && <p className="admin-empty-state">No products yet. Add one above to begin.</p>}</div></div></>}
     {section === 'Orders' && <div className="admin-panel"><div className="panel-heading"><div><h2>Order management</h2><span>Live orders, delivery details and status changes</span></div><RefreshCw size={17}/></div><OrdersList orders={orders} onStatusChange={setOrderStatus}/></div>}
     {section === 'Users' && <div className="admin-panel"><div className="panel-heading"><div><h2>Registered users</h2><span>Customer contact and SMS consent details</span></div><strong className="admin-user-count">{users.length} users</strong></div><p className="admin-users-note">SMS messages use the phone number on each customer profile and are sent only when SMS updates are opted in and the number is valid for Ghana.</p>{usersError ? <p className="admin-feed-error" role="alert">{usersError}</p> : usersLoading ? <p className="admin-empty-state" role="status">Loading registered users…</p> : users.length ? <div className="admin-users-grid">{users.map((user) => <article className="admin-user-card" key={user.id}><header><div><h3>{user.fullName || 'Name not provided'}</h3><time>{dateLabel(user.createdAt)}</time></div><span className="admin-user-status">{user.accountStatus.replaceAll('_', ' ')}</span></header><dl><div><dt>Email</dt><dd>{user.email || 'Not provided'}</dd></div><div><dt>Phone</dt><dd>{user.phone || 'Not provided'}</dd></div><div><dt>SMS updates</dt><dd className={user.smsConsent && isValidGhanaPhone(user.phone) ? 'sms-ready' : 'sms-needs-attention'}>{!user.smsConsent ? 'Not opted in' : isValidGhanaPhone(user.phone) ? 'Opted in · valid Ghana number' : 'Opted in · check phone number'}</dd></div></dl></article>)}</div> : <p className="admin-empty-state">No registered users found.</p>}</div>}

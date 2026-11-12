@@ -100,6 +100,29 @@ function localGhanaNumber(value) {
   return /^0\d{9}$/.test(local) ? local : null
 }
 
+function safeSmsProviderText(value) {
+  if (typeof value !== 'string') return ''
+  return value
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .replace(/\b(?:\+?233|0)\d{8,9}\b/g, '[phone]')
+    .replace(/\b\d{8,}\b/g, '[redacted]')
+    .replace(/\b(api[\s_-]*key|key)\s*[:=]\s*[^&\s"'<>]+/gi, '$1=[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200)
+}
+
+class SmsProviderError extends Error {
+  constructor(status, providerCode, providerMessage) {
+    const detail = [providerCode && `code ${providerCode}`, providerMessage].filter(Boolean).join(': ')
+    super(`mNotify rejected SMS (HTTP ${status})${detail ? `: ${detail}` : '.'}`)
+    this.name = 'SmsProviderError'
+    this.retryable = status === 408 || status === 425 || status === 429 || status >= 500
+    this.failureCode = `mnotify_${status}_${providerCode || 'rejected'}`.slice(0, 80)
+  }
+}
+
 async function sendCustomerSms(uid, eventId, message) {
   const eventRef = db.doc(`smsEvents/${eventId}`)
   if (!mnotifyApiKey || !mnotifySenderId || mnotifySenderId.length > 11) {
@@ -154,16 +177,27 @@ async function sendCustomerSms(uid, eventId, message) {
       body: JSON.stringify({ recipient: [recipient], sender: mnotifySenderId, message: message.slice(0, 500), is_schedule: false, schedule_date: '' }),
       signal: AbortSignal.timeout(10000),
     })
-    const result = await smsResponse.json().catch(() => null)
-    if (!smsResponse.ok || result?.status !== 'success') throw new Error(`mNotify rejected SMS (HTTP ${smsResponse.status}).`)
+    const responseText = await smsResponse.text()
+    let result
+    try {
+      result = JSON.parse(responseText)
+    } catch {
+      result = null
+    }
+    if (!smsResponse.ok || result?.status !== 'success') {
+      const providerCode = safeSmsProviderText(String(result?.code ?? result?.error_code ?? '')).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40)
+      const providerMessage = safeSmsProviderText(result?.message ?? result?.error ?? result?.description ?? '')
+      throw new SmsProviderError(smsResponse.status, providerCode, providerMessage)
+    }
     await eventRef.update({ status: 'sent', providerCampaignId: result.summary?._id ?? null, sentAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() })
     return { sent: true }
   } catch (error) {
     const retryAt = Timestamp.fromMillis(Date.now() + Math.min(300000, 15000 * (2 ** (attempt - 1))))
+    const retryable = !(error instanceof SmsProviderError) || error.retryable
     await eventRef.update({
-      status: attempt < 5 ? 'queued' : 'failed',
-      failureCode: error instanceof Error ? error.name : 'unknown',
-      nextAttemptAt: attempt < 5 ? retryAt : FieldValue.delete(),
+      status: retryable && attempt < 5 ? 'queued' : 'failed',
+      failureCode: error instanceof SmsProviderError ? error.failureCode : error instanceof Error ? error.name : 'unknown',
+      nextAttemptAt: retryable && attempt < 5 ? retryAt : FieldValue.delete(),
       updatedAt: FieldValue.serverTimestamp(),
     })
     throw error
@@ -287,7 +321,7 @@ async function commitVerifiedPayment(reference, verified) {
     const refs = lines.map((line) => db.doc(`products/${line.productId}`))
     const products = await transaction.getAll(...refs)
     if (order.reservationStatus !== 'reserved') {
-      transaction.update(orderRef, { paymentStatus: 'success', orderStatus: 'refund_pending', refundReviewRequired: true, updatedAt: FieldValue.serverTimestamp() })
+      transaction.update(orderRef, { paymentStatus: 'success', orderStatus: 'refund_pending', refundReviewRequired: true, paidAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() })
       transaction.update(paymentRef, { status: 'success', providerTransactionId: verified.id ?? null, verifiedAt: FieldValue.serverTimestamp(), refundReviewRequired: true })
       return { shouldDispatchSms: queuePaymentSms() }
     }
@@ -299,7 +333,7 @@ async function commitVerifiedPayment(reference, verified) {
       transaction.update(refs[index], { stock: Number(snapshot.get('stock')) - Number(line.quantity), reservedStock: Number(snapshot.get('reservedStock')) - Number(line.quantity), updatedAt: FieldValue.serverTimestamp() })
       transaction.create(db.collection('inventoryMovements').doc(), { productId: line.productId, orderId: reference, type: 'sale', quantity: -Number(line.quantity), actorId: 'paystack-server', createdAt: FieldValue.serverTimestamp() })
     })
-    transaction.update(orderRef, { reservationStatus: 'committed', paymentStatus: 'success', orderStatus: 'payment_confirmed', updatedAt: FieldValue.serverTimestamp() })
+    transaction.update(orderRef, { reservationStatus: 'committed', paymentStatus: 'success', orderStatus: 'payment_confirmed', paidAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() })
     transaction.update(paymentRef, { status: 'success', providerTransactionId: verified.id ?? null, verifiedAt: FieldValue.serverTimestamp(), providerReference: reference })
     transaction.create(db.collection('notifications').doc(), { recipientId: order.customerId, type: 'payment.confirmed', resourceId: reference, read: false, createdAt: FieldValue.serverTimestamp() })
     transaction.create(db.collection('activityLogs').doc(), { actorId: 'paystack-server', type: 'payment.confirmed', resourceId: reference, createdAt: FieldValue.serverTimestamp() })

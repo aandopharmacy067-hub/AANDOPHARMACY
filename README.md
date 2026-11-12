@@ -48,6 +48,8 @@ Without Firebase values the app uses a clearly marked sample catalogue. Authenti
 10. In Firebase Authentication, add `aandopharmacy.onrender.com` to Authorized domains. In Paystack, configure the webhook URL as `https://aandopharmacy.onrender.com/api/payments/webhook`. Use test-mode keys and test events first, and confirm the Render health check `/api/health` is healthy.
 11. The Render service uses its single origin for storefront, checkout, return verification, webhooks and SMS APIs. `PUBLIC_APP_URL` is set in `render.yaml` to `https://aandopharmacy.onrender.com`.
 
+If SMS is rejected, check the Render logs for the provider HTTP status and redacted mNotify response detail; the server does not log the API key or full phone number. Verification-email failures show the Firebase Auth error code in the storefront so the corresponding Firebase setting can be corrected.
+
 Never put the Paystack secret, mNotify key or Firebase service-account credentials in source control, `.env.local`, or any `VITE_*` setting. The browser cannot supply the Paystack callback URL, price, amount or payment status; the Express server owns those decisions. Credentials previously pasted into chat should be revoked and replaced before production deployment.
 
 ## Firestore Data Shape
