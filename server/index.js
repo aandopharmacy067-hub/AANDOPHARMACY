@@ -78,8 +78,13 @@ function authenticateUser(request, response, next) {
     next()
   }).catch((error) => {
     const code = error && typeof error.code === 'string' ? error.code : 'unknown'
-    console.error(`Firebase ID token verification failed: ${code}`)
-    if (code === 'auth/insufficient-permission') return response.status(503).json({ error: 'Firebase Admin is missing permission to verify accounts.' })
+    const detail = error instanceof Error
+      ? error.message.replace(/\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted]').slice(0, 240)
+      : 'Unknown Firebase Admin error.'
+    console.error(`Firebase ID token verification failed: ${code}; ${detail}`)
+    if (code === 'auth/insufficient-permission' || code === 'auth/internal-error') {
+      return response.status(503).json({ error: 'Firebase Authentication could not validate the session. Check Firebase Admin credentials and try again.' })
+    }
     return response.status(401).json({ error: 'Your session expired. Sign in again.' })
   })
 }
