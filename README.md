@@ -10,12 +10,13 @@ Implemented in this workspace:
 - Email/password registration, sign-in, email verification and password reset through Firebase Authentication.
 - Published product reads from Firestore after Firebase configuration.
 - Same-origin Express checkout API verifies Firebase ID tokens, recalculates trusted prices/stock, reserves inventory and generates human-readable order IDs.
-- Paystack initialization uses a server-only secret. Signed webhooks and customer returns are independently verified, idempotent and update Firestore orders/payments/inventory.
-- mNotify auth/order/payment SMS triggers are handled by the same Express server and remain opt-in/best-effort.
+- Customer order history is account-scoped and updates live when pharmacy staff change order status; cart contents are isolated by account.
+- Paystack initialization uses a server-only secret. Signed webhooks update Firestore orders/payments/inventory idempotently; customer returns verify through Paystack only when the webhook has not confirmed the order yet.
+- Opt-in mNotify payment-confirmation texts use a Firestore outbox with retries and do not delay Paystack webhook acknowledgements.
 - Firestore rules block customer writes to trusted catalogue, stock, order totals and payment state.
 - Protected `/admin` portal with the designated verified Firebase admin identity, realtime Firestore products/orders/reviews, image compression and storage inside product documents, storefront publication controls and review/order status actions.
 
-Not yet implemented as production workflows: prescription upload/review and dispensing, customer order-history screens, wholesale pricing editor, full analytics, promotions/coupons, refunds, delivery integrations, email/SMS service, business-specific legal pages, and operational pharmacist approval. Prescription-only products are rejected by checkout. Do not launch until the missing workflows and Ghana-specific regulatory review are completed.
+Not yet implemented as production workflows: prescription upload/review and dispensing, wholesale pricing editor, full analytics, promotions/coupons, refunds, delivery integrations, email service, business-specific legal pages, and operational pharmacist approval. Prescription-only products are rejected by checkout. Do not launch until the missing workflows and Ghana-specific regulatory review are completed.
 
 ## Requirements
 
@@ -43,7 +44,7 @@ Without Firebase values the app uses a clearly marked sample catalogue. Authenti
 6. Deploy rules and indexes before using the app: `firebase deploy --only firestore:rules,firestore:indexes`.
 7. Deploy this repository to Render using the included `render.yaml` Blueprint. It creates a single Node web service named `aandopharmacy`, building from the repository root with `npm ci --include=dev && npm run build` and starting with `npm start`. If the existing service is not Blueprint-managed, set Root Directory to `.`, Build Command to `npm ci --include=dev && npm run build`, and Start Command to `npm start` in Render's Settings, then redeploy the latest commit. The start script also builds `dist/` if it is missing, but the explicit Build Command is still recommended.
 8. In Render's Environment settings, set the Firebase Web App values `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, and `VITE_FIREBASE_APP_ID` from your local Firebase Web App config. These are public client config values embedded during the build; the ignored `.env.local` is not uploaded to Render. The project ID is declared in the Blueprint.
-9. In Render's private Environment settings, enter `PAYSTACK_SECRET_KEY`, `FIREBASE_SERVICE_ACCOUNT_JSON`, and `MNOTIFY_API_KEY`. Use newly rotated Paystack/mNotify keys and a newly generated Firebase service-account JSON. Never commit these values or put them in `.env.local` or `VITE_*` variables.
+9. In Render's private Environment settings, enter `PAYSTACK_SECRET_KEY`, `FIREBASE_SERVICE_ACCOUNT_JSON`, `MNOTIFY_API_KEY`, and `MNOTIFY_SENDER_ID` (an approved sender ID of 11 characters or fewer). Use newly rotated Paystack/mNotify keys and a newly generated Firebase service-account JSON. Never commit these values or put them in `.env.local` or `VITE_*` variables.
 10. In Firebase Authentication, add `aandopharmacy.onrender.com` to Authorized domains. In Paystack, configure the webhook URL as `https://aandopharmacy.onrender.com/api/payments/webhook`. Use test-mode keys and test events first, and confirm the Render health check `/api/health` is healthy.
 11. The Render service uses its single origin for storefront, checkout, return verification, webhooks and SMS APIs. `PUBLIC_APP_URL` is set in `render.yaml` to `https://aandopharmacy.onrender.com`.
 
@@ -73,9 +74,9 @@ After changing the allowlist rules in this workspace, deploy them with `firebase
 
 - Checkout requires a signed-in, email-verified customer and validates current product state, price, quantity, wholesale status and delivery data on the server.
 - Checkout reserves inventory transactionally for 30 minutes. Successful verified payment commits stock once; failed initialization/payment and expiry release reservations.
-- Paystack callbacks and webhooks are not trusted as proof by themselves. Webhooks require the HMAC signature and the backend calls Paystack's verify endpoint before confirming payment.
+- Paystack callbacks are not trusted as proof: the server verifies them with Paystack. Webhooks require Paystack's HMAC signature and validate the signed reference, amount and currency against the server order before committing payment.
 - A verified payment received after reservation expiry is marked for refund review instead of consuming unreserved stock.
-- SMS uses mNotify's Quick Bulk SMS endpoint. Customers must opt in at registration. Signup, login, order-received and verified-payment messages are sent only to a valid Ghanaian number; login SMS is limited to one per 15 minutes. SMS provider failures do not block authentication or order/payment processing. Campaign IDs and delivery status are recorded in the admin-only `smsEvents` collection.
+- SMS uses mNotify's Quick Bulk SMS endpoint. Customers must opt in at registration and have a valid Ghanaian number on their account. Verified payments enqueue an order-received text in Firestore; delivery is retried up to five times without delaying the payment webhook or customer confirmation. Campaign IDs, retry state and delivery status are recorded in the admin-only `smsEvents` collection. Check `GET /api/health` for SMS configuration and the server logs for delivery failures.
 - Paystack and mNotify secrets, plus Firebase Admin credentials, must be set as private environment variables on the Node host (or in ignored local `.env.server` for development). Never put them in `.env.local`, any `VITE_*` setting, or source control. The mNotify SMS API is now called by this same server.
 - Prescription-required products are intentionally not purchasable through this checkout. Add an authorized pharmacist review and dispensing workflow before enabling them.
 - Have the pharmacy validate product publication, licensing details, customer privacy, dispensing operations and all policies against applicable Ghana FDA, Pharmacy Council and data-protection requirements before launch.

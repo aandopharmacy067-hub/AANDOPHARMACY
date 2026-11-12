@@ -101,28 +101,49 @@ function localGhanaNumber(value) {
 }
 
 async function sendCustomerSms(uid, eventId, message) {
-  if (!mnotifyApiKey || !mnotifySenderId || mnotifySenderId.length > 11) return false
-  const profile = await db.doc(`users/${uid}`).get()
-  if (!profile.exists || profile.get('smsConsent') !== true) return false
-  const recipient = localGhanaNumber(profile.get('phone') ?? '')
-  if (!recipient) return false
-
   const eventRef = db.doc(`smsEvents/${eventId}`)
-  const shouldSend = await db.runTransaction(async (transaction) => {
+  if (!mnotifyApiKey || !mnotifySenderId || mnotifySenderId.length > 11) {
+    return { sent: false, reason: 'not_configured' }
+  }
+
+  const profile = await db.doc(`users/${uid}`).get()
+  const skip = async (reason) => {
+    await eventRef.set({
+      customerId: uid,
+      eventType: eventId.split('_')[0],
+      status: 'skipped',
+      failureCode: reason,
+      updatedAt: FieldValue.serverTimestamp(),
+      ...(profile.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
+    }, { merge: true })
+    return { sent: false, reason }
+  }
+  if (!profile.exists) return skip('profile_missing')
+  if (profile.get('smsConsent') !== true) return skip('not_consented')
+  const recipient = localGhanaNumber(profile.get('phone') ?? '')
+  if (!recipient) return skip('invalid_phone')
+
+  const attempt = await db.runTransaction(async (transaction) => {
     const previous = await transaction.get(eventRef)
-    if (previous.exists && ['sending', 'sent'].includes(previous.get('status'))) return false
+    if (previous.get('status') === 'sent' || previous.get('status') === 'skipped') return 0
+    if (previous.get('status') === 'sending') {
+      const lastAttempt = previous.get('updatedAt')
+      if (lastAttempt instanceof Timestamp && lastAttempt.toMillis() > Date.now() - 120000) return 0
+    }
+    const attempts = Number(previous.get('attempts') ?? 0) + 1
     transaction.set(eventRef, {
       customerId: uid,
       eventType: eventId.split('_')[0],
       recipientLastFour: recipient.slice(-4),
       status: 'sending',
-      attempts: FieldValue.increment(1),
+      attempts,
+      nextAttemptAt: FieldValue.delete(),
       updatedAt: FieldValue.serverTimestamp(),
       ...(previous.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
     }, { merge: true })
-    return true
+    return attempts
   })
-  if (!shouldSend) return false
+  if (!attempt) return { sent: false, reason: 'already_processed' }
 
   try {
     const endpoint = new URL('https://api.mnotify.com/api/sms/quick')
@@ -133,13 +154,59 @@ async function sendCustomerSms(uid, eventId, message) {
       body: JSON.stringify({ recipient: [recipient], sender: mnotifySenderId, message: message.slice(0, 500), is_schedule: false, schedule_date: '' }),
       signal: AbortSignal.timeout(10000),
     })
-    const result = await smsResponse.json()
-    if (!smsResponse.ok || result.status !== 'success') throw new Error(`mNotify returned HTTP ${smsResponse.status}`)
+    const result = await smsResponse.json().catch(() => null)
+    if (!smsResponse.ok || result?.status !== 'success') throw new Error(`mNotify rejected SMS (HTTP ${smsResponse.status}).`)
     await eventRef.update({ status: 'sent', providerCampaignId: result.summary?._id ?? null, sentAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() })
-    return true
+    return { sent: true }
   } catch (error) {
-    await eventRef.update({ status: 'failed', failureCode: error instanceof Error ? error.name : 'unknown', updatedAt: FieldValue.serverTimestamp() })
+    const retryAt = Timestamp.fromMillis(Date.now() + Math.min(300000, 15000 * (2 ** (attempt - 1))))
+    await eventRef.update({
+      status: attempt < 5 ? 'queued' : 'failed',
+      failureCode: error instanceof Error ? error.name : 'unknown',
+      nextAttemptAt: attempt < 5 ? retryAt : FieldValue.delete(),
+      updatedAt: FieldValue.serverTimestamp(),
+    })
     throw error
+  }
+}
+
+let smsWorkerActive = false
+async function processPendingPaymentSms() {
+  if (smsWorkerActive || !mnotifyApiKey || !mnotifySenderId || mnotifySenderId.length > 11) return
+  smsWorkerActive = true
+  try {
+    const [queued, sending] = await Promise.all([
+      db.collection('smsEvents').where('status', '==', 'queued').limit(50).get(),
+      db.collection('smsEvents').where('status', '==', 'sending').limit(50).get(),
+    ])
+    const staleSending = sending.docs.filter((event) => {
+      if (event.get('eventType') !== 'payment') return false
+      const updatedAt = event.get('updatedAt')
+      return !(updatedAt instanceof Timestamp) || updatedAt.toMillis() <= Date.now() - 120000
+    })
+    const ready = [...queued.docs, ...staleSending].filter((event) => {
+      if (event.get('eventType') !== 'payment') return false
+      const nextAttemptAt = event.get('nextAttemptAt')
+      return !(nextAttemptAt instanceof Timestamp) || nextAttemptAt.toMillis() <= Date.now()
+    }).slice(0, 10)
+
+    await Promise.all(ready.map(async (event) => {
+      const customerId = String(event.get('customerId') ?? '')
+      const orderId = String(event.get('orderId') ?? '')
+      if (!customerId || !/^AO-\d{8}-\d{5,}$/.test(orderId)) {
+        await event.ref.update({ status: 'failed', failureCode: 'invalid_job', updatedAt: FieldValue.serverTimestamp() })
+        return
+      }
+      try {
+        await sendCustomerSms(customerId, event.id, `A & O Pharmacy: payment confirmed and order ${orderId} received. We will update you as it is processed.`)
+      } catch (error) {
+        console.error(`SMS delivery failed for ${event.id}:`, error instanceof Error ? error.message : 'unknown error')
+      }
+    }))
+  } catch (error) {
+    console.error('Payment SMS outbox scan failed:', error instanceof Error ? error.message : 'unknown error')
+  } finally {
+    smsWorkerActive = false
   }
 }
 
@@ -192,13 +259,28 @@ async function verifyPaystack(reference) {
 async function commitVerifiedPayment(reference, verified) {
   const orderRef = db.doc(`orders/${reference}`)
   const paymentRef = db.doc(`payments/${reference}`)
-  const updated = await db.runTransaction(async (transaction) => {
-    const [orderSnapshot, paymentSnapshot] = await transaction.getAll(orderRef, paymentRef)
+  const smsEventRef = db.doc(`smsEvents/payment_${reference}`)
+  const result = await db.runTransaction(async (transaction) => {
+    const [orderSnapshot, paymentSnapshot, smsEventSnapshot] = await transaction.getAll(orderRef, paymentRef, smsEventRef)
     if (!orderSnapshot.exists || !paymentSnapshot.exists) throw new Error('Order not found.')
     const order = orderSnapshot.data()
     const payment = paymentSnapshot.data()
-    if (payment.status === 'success') return false
-    if (Number(verified.amount) !== Number(order.totalPesewas) || verified.currency !== currency || Number(payment.amountPesewas) !== Number(order.totalPesewas)) {
+    const queuePaymentSms = () => {
+      if (['sent', 'skipped', 'sending'].includes(smsEventSnapshot.get('status'))) return false
+      if (Number(smsEventSnapshot.get('attempts') ?? 0) >= 5) return false
+      transaction.set(smsEventRef, {
+        customerId: order.customerId,
+        eventType: 'payment',
+        orderId: reference,
+        status: 'queued',
+        nextAttemptAt: FieldValue.delete(),
+        updatedAt: FieldValue.serverTimestamp(),
+        ...(smsEventSnapshot.exists ? {} : { attempts: 0, createdAt: FieldValue.serverTimestamp() }),
+      }, { merge: true })
+      return true
+    }
+    if (payment.status === 'success') return { shouldDispatchSms: queuePaymentSms() }
+    if (verified.reference !== reference || verified.status !== 'success' || Number(verified.amount) !== Number(order.totalPesewas) || verified.currency !== currency || Number(payment.amountPesewas) !== Number(order.totalPesewas)) {
       throw new Error('Verified amount or currency does not match the order.')
     }
     const lines = order.items ?? []
@@ -207,7 +289,7 @@ async function commitVerifiedPayment(reference, verified) {
     if (order.reservationStatus !== 'reserved') {
       transaction.update(orderRef, { paymentStatus: 'success', orderStatus: 'refund_pending', refundReviewRequired: true, updatedAt: FieldValue.serverTimestamp() })
       transaction.update(paymentRef, { status: 'success', providerTransactionId: verified.id ?? null, verifiedAt: FieldValue.serverTimestamp(), refundReviewRequired: true })
-      return true
+      return { shouldDispatchSms: queuePaymentSms() }
     }
     products.forEach((snapshot, index) => {
       const line = lines[index]
@@ -221,11 +303,25 @@ async function commitVerifiedPayment(reference, verified) {
     transaction.update(paymentRef, { status: 'success', providerTransactionId: verified.id ?? null, verifiedAt: FieldValue.serverTimestamp(), providerReference: reference })
     transaction.create(db.collection('notifications').doc(), { recipientId: order.customerId, type: 'payment.confirmed', resourceId: reference, read: false, createdAt: FieldValue.serverTimestamp() })
     transaction.create(db.collection('activityLogs').doc(), { actorId: 'paystack-server', type: 'payment.confirmed', resourceId: reference, createdAt: FieldValue.serverTimestamp() })
-    return true
+    return { shouldDispatchSms: queuePaymentSms() }
   })
-  if (updated) {
-    const order = await orderRef.get()
-    await sendCustomerSms(String(order.get('customerId')), `payment_${reference}`, `A & O Pharmacy: payment for order ${reference} is confirmed. We will keep you updated on your order.`).catch(() => undefined)
+  if (result.shouldDispatchSms) void processPendingPaymentSms()
+}
+
+function paymentResult(reference, orderSnapshot) {
+  const purchasedItems = orderSnapshot.get('items')
+  const createdAt = orderSnapshot.get('createdAt')
+  return {
+    orderId: reference,
+    paymentStatus: orderSnapshot.get('paymentStatus'),
+    orderStatus: orderSnapshot.get('orderStatus'),
+    items: Array.isArray(purchasedItems) ? purchasedItems.map((item) => ({
+      name: String(item.name ?? 'Product'),
+      quantity: Number(item.quantity ?? 0),
+      lineTotalPesewas: Number(item.lineTotalPesewas ?? 0),
+    })) : [],
+    totalPesewas: Number(orderSnapshot.get('totalPesewas') ?? 0),
+    createdAt: createdAt instanceof Timestamp ? createdAt.toDate().toISOString() : null,
   }
 }
 
@@ -234,7 +330,7 @@ app.get('/api/health', (_request, response) => response.json({
   paystackConfigured: Boolean(paystackSecret),
   firebaseProjectConfigured: Boolean(projectId),
   firebaseAdminCredentialsConfigured,
-  smsConfigured: Boolean(mnotifyApiKey && mnotifySenderId),
+  smsConfigured: Boolean(mnotifyApiKey && mnotifySenderId && mnotifySenderId.length <= 11),
 }))
 
 app.post('/api/notifications/auth-sms', express.json({ limit: '10kb' }), (request, response, next) => requireFirebaseAdmin(response) && next(), authenticateUser, async (request, response) => {
@@ -243,15 +339,18 @@ app.post('/api/notifications/auth-sms', express.json({ limit: '10kb' }), (reques
   const uid = request.user.uid
   const eventId = event === 'signup' ? `signup_${uid}` : `login_${uid}_${Math.floor(Date.now() / (15 * 60 * 1000))}`
   const profile = await db.doc(`users/${uid}`).get()
-  if (!profile.exists || profile.get('smsConsent') !== true) return response.json({ sent: false, reason: 'not_consented' })
+  if (!profile.exists) return response.json({ sent: false, reason: 'profile_missing' })
+  if (profile.get('smsConsent') !== true) return response.json({ sent: false, reason: 'not_consented' })
   const firstName = String(profile.get('fullName') ?? '').trim().split(/\s+/)[0] || 'there'
   const text = event === 'signup'
     ? `Welcome to A & O Pharmacy, ${firstName}. Your account is ready. We will text you about your orders and payments.`
     : `A & O Pharmacy: successful sign-in to your account. If this was not you, please secure your account.`
   try {
-    const sent = await sendCustomerSms(uid, eventId, text)
-    return response.json({ sent })
-  } catch {
+    const result = await sendCustomerSms(uid, eventId, text)
+    if (!result.sent) console.warn(`SMS not sent for ${eventId}: ${result.reason}`)
+    return response.json(result)
+  } catch (error) {
+    console.error(`SMS delivery failed for ${eventId}:`, error instanceof Error ? error.message : 'unknown error')
     return response.status(502).json({ sent: false, error: 'SMS provider is temporarily unavailable.' })
   }
 })
@@ -346,8 +445,6 @@ app.post('/api/payments/checkout', express.json({ limit: '100kb' }), (request, r
     return response.status(400).json({ error: error instanceof Error ? error.message : 'Order could not be prepared.' })
   }
 
-  await sendCustomerSms(request.user.uid, `order_${order.orderId}`, `A & O Pharmacy: order ${order.orderId} has been received. Payment is pending. We will update you when payment is confirmed.`).catch(() => undefined)
-
   try {
     const initResponse = await fetch('https://api.paystack.co/transaction/initialize', {
       method: 'POST',
@@ -366,16 +463,17 @@ app.post('/api/payments/checkout', express.json({ limit: '100kb' }), (request, r
 })
 
 app.post('/api/payments/verify', express.json({ limit: '10kb' }), (request, response, next) => requireFirebaseAdmin(response) && next(), authenticateUser, requireVerifiedEmail, async (request, response) => {
-  if (!requirePaystack(response)) return
   const reference = String(request.body?.reference ?? '')
   if (!/^AO-\d{8}-\d{5,}$/.test(reference)) return response.status(400).json({ error: 'Invalid order reference.' })
   const orderSnapshot = await db.doc(`orders/${reference}`).get()
   if (!orderSnapshot.exists || orderSnapshot.get('customerId') !== request.user.uid) return response.status(404).json({ error: 'Order not found.' })
+  if (orderSnapshot.get('paymentStatus') === 'success') return response.json(paymentResult(reference, orderSnapshot))
+  if (!requirePaystack(response)) return
   try {
     const verified = await verifyPaystack(reference)
     await commitVerifiedPayment(reference, verified)
     const updated = await orderSnapshot.ref.get()
-    return response.json({ orderId: reference, paymentStatus: updated.get('paymentStatus'), orderStatus: updated.get('orderStatus') })
+    return response.json(paymentResult(reference, updated))
   } catch (error) {
     return response.status(400).json({ error: error instanceof Error ? error.message : 'Payment verification failed.' })
   }
@@ -384,6 +482,7 @@ app.post('/api/payments/verify', express.json({ limit: '10kb' }), (request, resp
 app.post('/api/payments/webhook', express.raw({ type: 'application/json', limit: '1mb' }), async (request, response) => {
   if (!requirePaystack(response)) return
   if (!requireFirebaseAdmin(response)) return
+  if (!Buffer.isBuffer(request.body)) return response.sendStatus(400)
   const signature = request.header('x-paystack-signature') ?? ''
   const expected = crypto.createHmac('sha512', paystackSecret).update(request.body).digest()
   let received
@@ -392,14 +491,14 @@ app.post('/api/payments/webhook', express.raw({ type: 'application/json', limit:
   let event
   try { event = JSON.parse(request.body.toString('utf8')) } catch { return response.sendStatus(400) }
   const reference = event?.data?.reference
-  if (!reference || typeof reference !== 'string') return response.sendStatus(200)
+  if (typeof reference !== 'string' || !/^AO-\d{8}-\d{5,}$/.test(reference)) return response.sendStatus(200)
   try {
     if (event.event === 'charge.failed') {
       await releaseReservation(reference, 'payment_failed')
       return response.sendStatus(200)
     }
     if (event.event !== 'charge.success') return response.sendStatus(200)
-    const verified = await verifyPaystack(reference)
+    const verified = event.data
     await commitVerifiedPayment(reference, verified)
     return response.sendStatus(200)
   } catch (error) {
@@ -424,6 +523,9 @@ async function expirePaymentReservations() {
 if (firebaseAdminCredentialsConfigured && projectId) {
   const reservationCleanup = setInterval(() => void expirePaymentReservations(), 5 * 60 * 1000)
   reservationCleanup.unref()
+  const paymentSmsWorker = setInterval(() => void processPendingPaymentSms(), 10 * 1000)
+  paymentSmsWorker.unref()
+  void processPendingPaymentSms()
 }
 
 app.use(express.static(frontendBuildPath, { index: false, maxAge: '1h' }))
