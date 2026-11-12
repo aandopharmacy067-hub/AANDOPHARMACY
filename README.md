@@ -14,7 +14,7 @@ Implemented in this workspace:
 - Paystack initialization uses a server-only secret. Signed webhooks update Firestore orders/payments/inventory idempotently; customer returns verify through Paystack only when the webhook has not confirmed the order yet.
 - Opt-in mNotify payment-confirmation texts use a Firestore outbox with retries and do not delay Paystack webhook acknowledgements.
 - Firestore rules block customer writes to trusted catalogue, stock, order totals and payment state.
-- Protected `/admin` portal with the designated verified Firebase admin identity, realtime Firestore products/orders/reviews, image compression and storage inside product documents, storefront publication controls and review/order status actions.
+- Protected `/admin` portal with the designated verified Firebase admin identity, realtime Firestore products/orders/reviews and a customer directory with account phone/SMS consent details, image compression and storage inside product documents, storefront publication controls and review/order status actions.
 
 Not yet implemented as production workflows: prescription upload/review and dispensing, wholesale pricing editor, full analytics, promotions/coupons, refunds, delivery integrations, email service, business-specific legal pages, and operational pharmacist approval. Prescription-only products are rejected by checkout. Do not launch until the missing workflows and Ghana-specific regulatory review are completed.
 
@@ -52,7 +52,7 @@ Never put the Paystack secret, mNotify key or Firebase service-account credentia
 
 ## Firestore Data Shape
 
-- `users/{uid}`: `fullName`, `email`, `phone`, `accountStatus`, `wholesaleStatus`, timestamps and saved addresses. No admin role is stored in this document; the single designated admin is matched by verified Firebase Auth email in the rules.
+- `users/{uid}`: `fullName`, `email`, `phone`, `smsConsent`, `accountStatus`, `wholesaleStatus`, timestamps and saved addresses. The server sends opt-in SMS to this account phone. No admin role is stored in this document; the single designated admin is matched by verified Firebase Auth email in the rules.
 - `products/{productId}`: product name, auto-generated SKU, category, price, stock, publication and approval fields, plus `images[0].url` containing a compressed WebP data URL (max 350 KB before base64 encoding). This Firestore-only image approach suits a small test catalogue; each product read also transfers its image, so use a dedicated image host for a larger catalogue.
 - `wholesalePricing/{productId}`: `wholesalePricePesewas`, `wholesaleTiers[]` (`minQuantity`, `unitPricePesewas`) and `minimumWholesaleQuantity`. Rules allow reads only for approved wholesale accounts, explicitly open-access accounts and admins; checkout reads these records server-side.
 - `categories/{categoryId}`: pharmacy-managed category metadata and publication status.

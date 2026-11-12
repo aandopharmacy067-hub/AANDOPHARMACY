@@ -1,9 +1,10 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { collection, doc, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore'
-import { ArrowRight, BadgeCheck, Box, ClipboardList, ImagePlus, LogOut, MessageSquareText, PackagePlus, RefreshCw, ShieldCheck } from 'lucide-react'
+import { ArrowRight, BadgeCheck, Box, ClipboardList, ImagePlus, LogOut, MessageSquareText, PackagePlus, RefreshCw, ShieldCheck, Users } from 'lucide-react'
 import { signOut } from 'firebase/auth'
 import { auth, db } from './lib/firebase'
 import './admin-live.css'
+import './admin-details.css'
 
 type AdminProduct = {
   id: string
@@ -30,7 +31,19 @@ type AdminOrder = {
   paymentStatus: string
   orderStatus: string
   createdAt?: { toDate?: () => Date }
-  items?: Array<{ name: string; quantity: number }>
+  deliveryInstructions?: string
+  address?: { fullName?: string; phone?: string; street?: string; city?: string; region?: string }
+  items?: Array<{ name: string; quantity: number; lineTotalPesewas?: number }>
+}
+
+type AdminUser = {
+  id: string
+  fullName: string
+  email: string
+  phone: string
+  smsConsent: boolean
+  accountStatus: string
+  createdAt?: { toDate?: () => Date }
 }
 
 type AdminReview = {
@@ -47,6 +60,11 @@ const categories = ['Prescription Medicines', 'Over-the-Counter Medicines', 'Vit
 const orderStatuses = ['payment_confirmed', 'processing', 'ready_for_dispatch', 'out_for_delivery', 'completed', 'cancelled', 'refund_pending', 'refunded']
 const currency = (pesewas: number) => `GH₵ ${(pesewas / 100).toFixed(2)}`
 const dateLabel = (timestamp?: { toDate?: () => Date }) => timestamp?.toDate ? timestamp.toDate().toLocaleString() : 'Just now'
+const isValidGhanaPhone = (value: string) => {
+  const digits = value.trim().replace(/[^\d+]/g, '')
+  const local = digits.startsWith('+233') ? `0${digits.slice(4)}` : digits.startsWith('233') ? `0${digits.slice(3)}` : digits
+  return /^0\d{9}$/.test(local)
+}
 
 async function compressProductImage(file: File): Promise<string> {
   const bitmap = await createImageBitmap(file)
@@ -84,10 +102,13 @@ async function compressProductImage(file: File): Promise<string> {
 }
 
 export default function AdminPortal({ adminEmail, onExit }: { adminEmail: string; onExit: () => void }) {
-  const [section, setSection] = useState<'Overview' | 'Products' | 'Orders' | 'Reviews'>('Overview')
+  const [section, setSection] = useState<'Overview' | 'Products' | 'Orders' | 'Reviews' | 'Users'>('Overview')
   const [products, setProducts] = useState<AdminProduct[]>([])
   const [orders, setOrders] = useState<AdminOrder[]>([])
   const [reviews, setReviews] = useState<AdminReview[]>([])
+  const [users, setUsers] = useState<AdminUser[]>([])
+  const [usersLoading, setUsersLoading] = useState(false)
+  const [usersError, setUsersError] = useState('')
   const [feedError, setFeedError] = useState('')
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState('')
@@ -119,6 +140,31 @@ export default function AdminPortal({ adminEmail, onExit }: { adminEmail: string
     ]
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
   }, [])
+
+  useEffect(() => {
+    if (!db || section !== 'Users') return
+    setUsersLoading(true)
+    setUsersError('')
+    return onSnapshot(collection(db, 'users'), (snapshot) => {
+      const currentUsers = snapshot.docs.map((entry) => {
+        const data = entry.data()
+        return {
+          id: entry.id,
+          fullName: String(data.fullName ?? ''),
+          email: String(data.email ?? ''),
+          phone: String(data.phone ?? ''),
+          smsConsent: data.smsConsent === true,
+          accountStatus: String(data.accountStatus ?? 'unknown'),
+          createdAt: data.createdAt,
+        }
+      }).sort((first, second) => (second.createdAt?.toDate?.().getTime() ?? 0) - (first.createdAt?.toDate?.().getTime() ?? 0))
+      setUsers(currentUsers)
+      setUsersLoading(false)
+    }, (error) => {
+      setUsersError(`Users: ${error.message}`)
+      setUsersLoading(false)
+    })
+  }, [section])
 
   async function addProduct(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -198,21 +244,26 @@ export default function AdminPortal({ adminEmail, onExit }: { adminEmail: string
     { label: 'Overview', icon: BadgeCheck },
     { label: 'Products', icon: Box },
     { label: 'Orders', icon: ClipboardList },
+    { label: 'Users', icon: Users },
     { label: 'Reviews', icon: MessageSquareText },
   ]
   const pendingOrders = orders.filter((order) => ['pending_payment', 'payment_confirmed', 'processing'].includes(order.orderStatus)).length
   const paidTotal = orders.filter((order) => order.paymentStatus === 'success').reduce((sum, order) => sum + Number(order.totalPesewas ?? 0), 0)
 
   return <main className="admin-layout"><aside className="admin-sidebar"><button className="admin-brand" onClick={onExit}><span className="brand-mark"><b>A</b><i>&</i><b>O</b></span><span><b>A & O</b><small>ADMINISTRATION</small></span></button><span className="admin-section-title">WORKSPACE</span><nav>{nav.map(({ label, icon: Icon }) => <button key={label} className={section === label ? 'admin-nav-active' : ''} onClick={() => setSection(label)}><Icon size={16}/>{label}</button>)}</nav><div className="admin-profile"><span className="admin-avatar">AO</span><div><b>Authorized admin</b><small>{adminEmail}</small></div><button title="Sign out" aria-label="Admin sign out" onClick={() => { if (!auth) { onExit(); return } void signOut(auth).then(onExit).catch(() => setFeedback('Sign out failed. Try again.')) }}><LogOut size={15}/></button></div></aside><section className="admin-main"><header className="admin-topbar"><div><span>Administration / Live workspace</span><h1>{section}</h1></div><span className="admin-live-indicator"><i/> Live Firebase data</span></header><div className="admin-content">{feedError && <div className="admin-feed-error" role="alert"><ShieldCheck size={18}/>{feedError} Check deployed Firestore rules and indexes.</div>}{feedback && <div className="admin-feedback" role="status">{feedback}<button type="button" onClick={() => setFeedback('')} aria-label="Dismiss message">×</button></div>}
-    {section === 'Overview' && <><div className="admin-stat-grid"><div className="admin-stat"><span>Paid sales</span><strong>{currency(paidTotal)}</strong><small>Loaded orders</small></div><div className="admin-stat"><span>Total orders</span><strong>{orders.length}</strong><small>Most recent 100</small></div><div className="admin-stat"><span>Pending / active</span><strong>{pendingOrders}</strong><small>Current queue</small></div><div className="admin-stat"><span>Products</span><strong>{products.length}</strong><small>Live catalogue records</small></div></div><div className="admin-panel"><div className="panel-heading"><div><h2>Recent orders</h2><span>Live Firestore updates</span></div><button onClick={() => setSection('Orders')}>All orders <ArrowRight size={14}/></button></div><OrdersTable orders={orders.slice(0, 8)} onStatusChange={setOrderStatus}/></div><div className="admin-panel"><div className="panel-heading"><div><h2>Recent customer feedback</h2><span>Live Firestore reviews</span></div><button onClick={() => setSection('Reviews')}>All reviews <ArrowRight size={14}/></button></div><ReviewsList reviews={reviews.slice(0, 5)} onModerate={moderateReview}/></div></>}
+    {section === 'Overview' && <><div className="admin-stat-grid"><div className="admin-stat"><span>Paid sales</span><strong>{currency(paidTotal)}</strong><small>Loaded orders</small></div><div className="admin-stat"><span>Total orders</span><strong>{orders.length}</strong><small>Most recent 100</small></div><div className="admin-stat"><span>Pending / active</span><strong>{pendingOrders}</strong><small>Current queue</small></div><div className="admin-stat"><span>Products</span><strong>{products.length}</strong><small>Live catalogue records</small></div></div><div className="admin-panel"><div className="panel-heading"><div><h2>Recent orders</h2><span>Live Firestore updates</span></div><button onClick={() => setSection('Orders')}>All orders <ArrowRight size={14}/></button></div><OrdersList orders={orders.slice(0, 8)} onStatusChange={setOrderStatus}/></div><div className="admin-panel"><div className="panel-heading"><div><h2>Recent customer feedback</h2><span>Live Firestore reviews</span></div><button onClick={() => setSection('Reviews')}>All reviews <ArrowRight size={14}/></button></div><ReviewsList reviews={reviews.slice(0, 5)} onModerate={moderateReview}/></div></>}
     {section === 'Products' && <><div className="admin-panel"><div className="panel-heading"><div><h2>Add a product</h2><span>Uploaded images and approved listings sync to the storefront.</span></div><PackagePlus size={19}/></div><form className="admin-product-form" onSubmit={addProduct}><label>Product name<input required value={name} onChange={(event) => setName(event.target.value)} maxLength={120}/></label><label>Brand / manufacturer<input value={brand} onChange={(event) => setBrand(event.target.value)} maxLength={100}/></label><label>Category<select value={category} onChange={(event) => setCategory(event.target.value)}>{categories.map((option) => <option key={option}>{option}</option>)}</select></label><label>Retail price (GHS)<input required type="number" min="0.01" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)}/></label><label>Available stock<input required type="number" min="0" step="1" value={stock} onChange={(event) => setStock(event.target.value)}/></label><label className="admin-field-wide admin-image-field"><span>Product image (source max 10 MB)</span><input id="admin-product-image" required type="file" accept="image/*" onChange={(event) => setImage(event.target.files?.[0] ?? null)}/><small>{image ? image.name : 'The image is compressed to fit safely in Firestore.'}</small></label><div className="admin-check-options"><label><input type="checkbox" checked={saleApproved} onChange={(event) => setSaleApproved(event.target.checked)}/> Approved for online sale</label><label><input type="checkbox" checked={publish} onChange={(event) => setPublish(event.target.checked)}/> Publish to storefront</label><label><input type="checkbox" checked={prescriptionRequired} onChange={(event) => setPrescriptionRequired(event.target.checked)}/> Prescription required</label><label><input type="checkbox" checked={featured} onChange={(event) => setFeatured(event.target.checked)}/> Featured</label></div><p className="admin-form-note">A listing appears publicly only when both approval and publish are selected. Prescription-required products remain blocked from checkout.</p>{busy && <div className="admin-upload-progress" role="status"><span>{uploadStage === 'optimizing' ? 'Optimizing image for Firestore…' : 'Saving product and image to Firestore…'}</span><progress/></div>}<button className="button button-green" type="submit" disabled={busy || (publish && !saleApproved)}>{busy ? uploadStage === 'optimizing' ? 'Optimizing image…' : 'Saving product…' : <><ImagePlus size={16}/> Save product</>}</button></form></div><div className="admin-panel"><div className="panel-heading"><div><h2>Catalogue</h2><span>{products.length} live records, including drafts</span></div><RefreshCw size={17}/></div><div className="admin-product-list">{products.map((product) => <div className="admin-product-row" key={product.id}><img src={product.images?.[0]?.url ?? ''} alt=""/><div className="admin-product-description"><b>{product.name}</b><small>{product.sku} · {product.categoryName} · Stock {product.stock}</small></div><strong>{currency(product.retailPricePesewas)}</strong><span className={`admin-product-status ${product.publicationStatus === 'published' && product.onlineSaleApproved ? 'is-published' : ''}`}>{product.publicationStatus === 'published' && product.onlineSaleApproved ? 'Published' : 'Draft'}</span><button className="admin-small-action" onClick={() => void setProductPublished(product)}>{product.publicationStatus === 'published' ? 'Unpublish' : product.onlineSaleApproved ? 'Publish' : 'Approve & publish'}</button></div>)}{products.length === 0 && <p className="admin-empty-state">No products yet. Add one above to begin.</p>}</div></div></>}
-    {section === 'Orders' && <div className="admin-panel"><div className="panel-heading"><div><h2>Order management</h2><span>Live orders, payments and status changes</span></div><RefreshCw size={17}/></div><OrdersTable orders={orders} onStatusChange={setOrderStatus}/></div>}
+    {section === 'Orders' && <div className="admin-panel"><div className="panel-heading"><div><h2>Order management</h2><span>Live orders, delivery details and status changes</span></div><RefreshCw size={17}/></div><OrdersList orders={orders} onStatusChange={setOrderStatus}/></div>}
+    {section === 'Users' && <div className="admin-panel"><div className="panel-heading"><div><h2>Registered users</h2><span>Customer contact and SMS consent details</span></div><strong className="admin-user-count">{users.length} users</strong></div><p className="admin-users-note">SMS messages use the phone number on each customer profile and are sent only when SMS updates are opted in and the number is valid for Ghana.</p>{usersError ? <p className="admin-feed-error" role="alert">{usersError}</p> : usersLoading ? <p className="admin-empty-state" role="status">Loading registered users…</p> : users.length ? <div className="admin-users-grid">{users.map((user) => <article className="admin-user-card" key={user.id}><header><div><h3>{user.fullName || 'Name not provided'}</h3><time>{dateLabel(user.createdAt)}</time></div><span className="admin-user-status">{user.accountStatus.replaceAll('_', ' ')}</span></header><dl><div><dt>Email</dt><dd>{user.email || 'Not provided'}</dd></div><div><dt>Phone</dt><dd>{user.phone || 'Not provided'}</dd></div><div><dt>SMS updates</dt><dd className={user.smsConsent && isValidGhanaPhone(user.phone) ? 'sms-ready' : 'sms-needs-attention'}>{!user.smsConsent ? 'Not opted in' : isValidGhanaPhone(user.phone) ? 'Opted in · valid Ghana number' : 'Opted in · check phone number'}</dd></div></dl></article>)}</div> : <p className="admin-empty-state">No registered users found.</p>}</div>}
     {section === 'Reviews' && <div className="admin-panel"><div className="panel-heading"><div><h2>Customer feedback</h2><span>Moderate live review submissions</span></div><RefreshCw size={17}/></div><ReviewsList reviews={reviews} onModerate={moderateReview}/></div>}
     <p className="admin-disclaimer">Live data is read from the selected Firebase project. Product publication and order/review updates require deployed admin Firestore/Storage rules.</p></div></section></main>
 }
 
-function OrdersTable({ orders, onStatusChange }: { orders: AdminOrder[]; onStatusChange: (order: AdminOrder, status: string) => void }) {
-  return <div className="admin-live-table-wrap"><table className="admin-live-table"><thead><tr><th>ORDER</th><th>DATE</th><th>ITEMS</th><th>PAYMENT</th><th>TOTAL</th><th>FULFILLMENT</th></tr></thead><tbody>{orders.map((order) => <tr key={order.id}><td><b>{order.orderId || order.id}</b></td><td>{dateLabel(order.createdAt)}</td><td>{order.items?.reduce((sum, item) => sum + item.quantity, 0) ?? 0}</td><td><span className="admin-status-pill">{order.paymentStatus}</span></td><td>{currency(Number(order.totalPesewas ?? 0))}</td><td><select aria-label={`Set status for ${order.orderId}`} value={order.orderStatus} onChange={(event) => onStatusChange(order, event.target.value)}>{[...new Set([order.orderStatus, ...orderStatuses])].map((status) => <option key={status} value={status}>{status.replaceAll('_', ' ')}</option>)}</select></td></tr>)}</tbody></table>{orders.length === 0 && <p className="admin-empty-state">No orders yet. Orders will appear here as soon as they are created.</p>}</div>
+function OrdersList({ orders, onStatusChange }: { orders: AdminOrder[]; onStatusChange: (order: AdminOrder, status: string) => void }) {
+  return orders.length ? <div className="admin-orders-list">{orders.map((order) => <article className="admin-order-card" key={order.id}>
+    <header className="admin-order-header"><div><span>Order ID</span><strong>{order.orderId || order.id}</strong><time>{dateLabel(order.createdAt)}</time></div><div><span>Payment</span><b className="admin-status-pill">{order.paymentStatus}</b></div><div><span>Total</span><strong>{currency(Number(order.totalPesewas ?? 0))}</strong></div><label><span>Fulfillment</span><select aria-label={`Set status for ${order.orderId || order.id}`} value={order.orderStatus || 'pending_payment'} onChange={(event) => onStatusChange(order, event.target.value)}>{[...new Set([order.orderStatus || 'pending_payment', ...orderStatuses])].map((status) => <option key={status} value={status}>{status.replaceAll('_', ' ')}</option>)}</select></label></header>
+    <div className="admin-order-details"><section><h3>Items purchased</h3>{order.items?.length ? <ul>{order.items.map((item, index) => <li key={`${order.id}-${index}`}><span>{item.name || 'Product'} <b>× {item.quantity}</b></span>{typeof item.lineTotalPesewas === 'number' && <strong>{currency(item.lineTotalPesewas)}</strong>}</li>)}</ul> : <p>No item details saved for this order.</p>}</section><section><h3>Delivery details</h3>{order.address ? <address><b>{order.address.fullName || 'Name not provided'}</b><span>{order.address.phone || 'Phone not provided'}</span><span>{order.address.street || 'Street not provided'}</span><span>{[order.address.city, order.address.region].filter(Boolean).join(', ') || 'Location not provided'}</span>{order.deliveryInstructions && <small>Instructions: {order.deliveryInstructions}</small>}</address> : <p>No delivery details saved for this order.</p>}</section></div>
+  </article>)}</div> : <p className="admin-empty-state">No orders yet. Orders will appear here as soon as they are created.</p>
 }
 
 function ReviewsList({ reviews, onModerate }: { reviews: AdminReview[]; onModerate: (review: AdminReview, status: 'approved' | 'hidden') => void }) {

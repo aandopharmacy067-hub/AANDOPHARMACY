@@ -1,0 +1,219 @@
+.admin-orders-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.admin-order-card,
+.admin-user-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #e6ece7;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.admin-order-header {
+  display: grid;
+  grid-template-columns: minmax(155px, 1.4fr) minmax(95px, 0.8fr) minmax(90px, 0.7fr) minmax(145px, 1fr);
+  gap: 16px;
+  align-items: start;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #edf1ed;
+}
+
+.admin-order-header > div,
+.admin-order-header > label {
+  display: grid;
+  justify-items: start;
+  gap: 5px;
+  min-width: 0;
+}
+
+.admin-order-header > div > span,
+.admin-order-header > label > span,
+.admin-user-card dt {
+  color: #78857b;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.admin-order-header > div > strong {
+  color: #234a31;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.admin-order-header time,
+.admin-user-card time {
+  color: #78857b;
+  font-size: 9px;
+}
+
+.admin-order-header .admin-status-pill {
+  text-transform: capitalize;
+}
+
+.admin-order-header select {
+  max-width: 100%;
+  min-height: 29px;
+  border: 1px solid #e0e8e1;
+  border-radius: 5px;
+  background: #fff;
+  padding: 0 7px;
+  color: #3e4d43;
+  font: inherit;
+  font-size: 9px;
+  text-transform: capitalize;
+}
+
+.admin-order-details {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(250px, 1.2fr);
+  gap: 22px;
+  padding-top: 14px;
+}
+
+.admin-order-details h3 {
+  margin: 0 0 10px;
+  color: #35483a;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.admin-order-details p {
+  margin: 0;
+  color: #78857b;
+  font-size: 10px;
+}
+
+.admin-order-details ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-order-details li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #47544a;
+  font-size: 10px;
+}
+
+.admin-order-details li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-order-details li strong {
+  white-space: nowrap;
+}
+
+.admin-order-details address {
+  display: grid;
+  gap: 4px;
+  color: #47544a;
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.admin-order-details address small {
+  margin-top: 3px;
+  color: #78857b;
+}
+
+.admin-user-count {
+  color: #235d38;
+  font-size: 14px;
+}
+
+.admin-users-note {
+  margin: 10px 0 16px;
+  color: #78857b;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.admin-users-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr));
+  gap: 12px;
+}
+
+.admin-user-card > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #edf1ed;
+}
+
+.admin-user-card h3 {
+  margin: 0 0 5px;
+  color: #234a31;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.admin-user-status {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #f0f4f0;
+  color: #536258;
+  font-size: 8px;
+  text-transform: capitalize;
+}
+
+.admin-user-card dl {
+  display: grid;
+  gap: 10px;
+  margin: 13px 0 0;
+}
+
+.admin-user-card dl > div {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.admin-user-card dd {
+  margin: 0;
+  color: #47544a;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.admin-user-card .sms-ready {
+  color: #17613a;
+}
+
+.admin-user-card .sms-needs-attention {
+  color: #93671b;
+}
+
+@media (max-width: 760px) {
+  .admin-order-header {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 13px;
+  }
+
+  .admin-order-details {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+}
+
+@media (max-width: 420px) {
+  .admin-order-header {
+    grid-template-columns: 1fr;
+  }
+}
